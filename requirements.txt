@@ -1,0 +1,8 @@
+torch
+numpy
+scipy
+matplotlib
+pyyaml
+tqdm
+soundfile
+rir-generator
