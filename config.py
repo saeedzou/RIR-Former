@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, asdict
-from typing import Tuple, List
+from typing import Optional, Tuple, List
 
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +134,10 @@ class DataConfig:
     eval_missing_rates: List[float] = field(
         default_factory=lambda: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     )
+    # NEW: where RIRDataset should read samples from
+    source: str = "local"                 # "local" or "hub"
+    hub_repo_id: str = "saeedzou/rir-former-datasets"
+    hub_config_name: Optional[str] = None  # None -> defaults to cfg.experiment ("exp1"/"exp2")
 
 
 # --------------------------------------------------------------------------- #

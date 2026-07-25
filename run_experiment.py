@@ -60,6 +60,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=os.cpu_count() or 1,
                     help="Parallel worker processes for RIR simulation.")
 
+    p.add_argument("--source", choices=["local", "hub"], default="local")
+    p.add_argument("--hub_repo_id", type=str, default="saeedzou/rir-former-datasets")
+    p.add_argument("--hub_config_name", type=str, default=None)
+
     # allow overriding paper defaults if you have limited compute
     p.add_argument("--n_train", type=int, default=8000)
     p.add_argument("--n_val", type=int, default=200)
@@ -94,6 +98,9 @@ def main():
 
     overrides = {
         "data.data_root": data_root,
+        "data.source": args.source,
+        "data.hub_repo_id": args.hub_repo_id,
+        "data.hub_config_name": args.hub_config_name,
         "train.checkpoint_dir": checkpoint_dir,
         "train.device": args.device,
         "train.batch_size": args.batch_size,
@@ -137,10 +144,12 @@ def main():
     print("=" * 70)
 
     # ---- Stage 1: dataset generation ---- #
-    if not args.skip_data_gen:
+    if not args.skip_data_gen and cfg.data.source == "local":
         t0 = time.time()
         generate_all_splits(cfg, workers=args.workers)
-        print(f"[pipeline] Dataset generation finished in {time.time() - t0:.1f}s")
+    elif cfg.data.source == "hub":
+        print(f"[pipeline] Using Hugging Face Hub dataset "
+            f"{cfg.data.hub_repo_id} (config={cfg.data.hub_config_name or cfg.experiment})")
     else:
         print("[pipeline] Skipping data generation (--skip_data_gen)")
 
@@ -168,8 +177,8 @@ def main():
     save_results_csv(results, results_csv)
     print(f"[pipeline] Full missing-rate sweep saved to {results_csv}")
 
-    fixed = evaluate_at_missing_rate(model, cfg.data.data_root, "test", 0.7,
-                                      cfg.train.batch_size, cfg.train.device)
+    fixed = evaluate_at_missing_rate(model, cfg, "test", 0.7,
+                                  cfg.train.batch_size, cfg.train.device)
     print("\n" + "=" * 70)
     print(f"FINAL SUMMARY [{args.experiment}] @ MR=70% "
           f"(compare against Table 1/2 in the paper)")

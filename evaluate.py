@@ -30,7 +30,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import Config, get_config
-from dataset_generator import RIRDataset, collate_fn, generate_dataset
+from dataset_generator import build_rir_dataset, collate_fn, generate_dataset
 from model import RIRFormer, build_model
 from train import compute_metrics_per_sample, load_checkpoint
 
@@ -39,7 +39,7 @@ from train import compute_metrics_per_sample, load_checkpoint
 # Core evaluation loop for a single missing rate
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
-def evaluate_at_missing_rate(model: RIRFormer, data_root: str, split: str,
+def evaluate_at_missing_rate(model: RIRFormer, cfg: Config, split: str,
                               missing_rate: float, batch_size: int,
                               device: str, mask_seed: int = 1234) -> Dict[str, float]:
     """Evaluates over every sample in `split` at a fixed missing rate.
@@ -48,9 +48,9 @@ def evaluate_at_missing_rate(model: RIRFormer, data_root: str, split: str,
     average the results across all environments") -- NOT pooled into one
     Frobenius ratio per batch, since log10 doesn't commute with averaging."""
     model.eval()
-    ds = RIRDataset(data_root, split=split,
-                     mask_ratio_range=(missing_rate, missing_rate),
-                     deterministic=True, base_seed=mask_seed)
+    ds = build_rir_dataset(cfg, split=split,
+                            mask_ratio_range=(missing_rate, missing_rate),
+                            deterministic=True, base_seed=mask_seed)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     nmse_list, cd_list, infer_times = [], [], []
@@ -88,8 +88,7 @@ def evaluate_all_rates(model: RIRFormer, cfg: Config, split: str = "test",
     device = cfg.train.device
     results = []
     for mr in rates:
-        res = evaluate_at_missing_rate(model, cfg.data.data_root, split, mr,
-                                        cfg.train.batch_size, device)
+        res = evaluate_at_missing_rate(model, cfg, split, mr, cfg.train.batch_size, device)
         results.append(res)
         if verbose:
             print(f"[eval] MR={mr * 100:5.1f}%  NMSE={res['nmse_db']:7.3f} dB  "
@@ -120,6 +119,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--fixed_mr", type=float, default=0.7,
                     help="Missing rate used for the single-number Table 1/2 style summary.")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--source", choices=["local", "hub"], default="local")
+    p.add_argument("--hub_repo_id", type=str, default="saeedzou/rir-former-datasets")
+    p.add_argument("--hub_config_name", type=str, default=None)
     return p
 
 
@@ -127,6 +129,9 @@ def main():
     args = build_arg_parser().parse_args()
     cfg = get_config(args.experiment, **{
         "data.data_root": args.data_root,
+        "data.source": args.source,
+        "data.hub_repo_id": args.hub_repo_id,
+        "data.hub_config_name": args.hub_config_name,
         "train.batch_size": args.batch_size,
         "train.device": args.device,
     })
@@ -140,8 +145,7 @@ def main():
     print(f"Saved results to {args.out_csv}")
 
     print(f"\n=== Fixed MR={args.fixed_mr * 100:.0f}% summary (Table-style) ===")
-    fixed = evaluate_at_missing_rate(model, cfg.data.data_root, args.split,
-                                      args.fixed_mr, args.batch_size, args.device)
+    fixed = evaluate_at_missing_rate(model, cfg, args.split, args.fixed_mr, args.batch_size, args.device)
     print(f"Ours   NMSE={fixed['nmse_db']:.3f} dB  CD={fixed['cd']:.3f}  "
           f"Inference={fixed['inference_time_s']:.4f} s")
 
@@ -197,7 +201,7 @@ if __name__ == "__main__":
             print(f"[OK] Checkpoint saved & reloaded (epoch={ckpt['epoch']})")
 
             # single missing-rate evaluation
-            single = evaluate_at_missing_rate(model2, tmp_root, "test", 0.7, 2, "cpu")
+            single = evaluate_at_missing_rate(model2, cfg, "test", 0.7, 2, "cpu")
             assert single["n_samples"] == 4
             assert not np.isnan(single["nmse_db"])
             assert not np.isnan(single["cd"])
@@ -229,7 +233,7 @@ if __name__ == "__main__":
                     return H_norm.clone()
 
             perfect = PerfectModel()
-            perfect_res = evaluate_at_missing_rate(perfect, tmp_root, "test", 0.5, 2, "cpu")
+            perfect_res = evaluate_at_missing_rate(perfect, cfg, "test", 0.5, 2, "cpu")
             assert perfect_res["nmse_db"] < -50, perfect_res
             assert abs(perfect_res["cd"]) < 1e-4, perfect_res
             print(f"[OK] Perfect-reconstruction sanity check: "

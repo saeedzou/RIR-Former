@@ -49,7 +49,10 @@ import rir_generator as rir
 
 from config import Config, get_config
 
-
+try:
+    from datasets import load_dataset
+except ImportError:
+    load_dataset = None
 # --------------------------------------------------------------------------- #
 # Geometry sampling
 # --------------------------------------------------------------------------- #
@@ -225,20 +228,46 @@ try:
         described in Sec. 3 "Training Objective").
         """
 
-        def __init__(self, root_dir: str, split: str,
-                     mask_ratio_range: Tuple[float, float] = (0.7, 0.7),
-                     deterministic: bool = False, base_seed: int = 1234):
-            self.dir = os.path.join(root_dir, split)
-            self.files = sorted(glob.glob(os.path.join(self.dir, "*.npy")))
-            if len(self.files) == 0:
-                raise RuntimeError(f"No .npy files found in: {self.dir}")
-
+        def __init__(self, root_dir: Optional[str], split: str,
+                    mask_ratio_range=(0.7, 0.7), deterministic=False, base_seed=1234,
+                    hub_repo_id: Optional[str] = None,
+                    hub_config_name: Optional[str] = None):
             self.mask_ratio_range = mask_ratio_range
             self.deterministic = deterministic
             self.base_seed = base_seed
+            self.source = "hub" if hub_repo_id else "local"
+
+            if self.source == "hub":
+                if load_dataset is None:
+                    raise ImportError(
+                        "`datasets` package required for hub loading: pip install datasets"
+                    )
+                self.hf_ds = load_dataset(hub_repo_id, hub_config_name, split=split)
+                self.files = None
+            else:
+                self.dir = os.path.join(root_dir, split)
+                self.files = sorted(glob.glob(os.path.join(self.dir, "*.npy")))
+                if len(self.files) == 0:
+                    raise RuntimeError(f"No .npy files found in: {self.dir}")
 
         def __len__(self):
-            return len(self.files)
+            return len(self.hf_ds) if self.source == "hub" else len(self.files)
+
+        def _load_raw(self, idx: int):
+            if self.source == "hub":
+                row = self.hf_ds[idx]
+                sample = {
+                    "rir": np.asarray(row["rir"], dtype=np.float32),
+                    "mic_positions": np.asarray(row["mic_positions"], dtype=np.float32),
+                    "src_position": np.asarray(row["src_position"], dtype=np.float32),
+                    "room_dims": np.asarray(row["room_dims"], dtype=np.float32),
+                    "rt60": np.float32(row["rt60"]),
+                }
+                path = f"hub://{idx}"
+            else:
+                path = self.files[idx]
+                sample = np.load(path, allow_pickle=True).item()
+            return sample, path
 
         def set_mask_ratio_range(self, lo: float, hi: float):
             self.mask_ratio_range = (lo, hi)
@@ -253,8 +282,7 @@ try:
             return mask
 
         def __getitem__(self, idx: int):
-            path = self.files[idx]
-            sample = np.load(path, allow_pickle=True).item()
+            sample, path = self._load_raw(idx)
 
             H = sample["rir"].astype(np.float32)                # (L, K)
             geo = sample["mic_positions"].astype(np.float32)    # (L, 3)
@@ -299,6 +327,17 @@ try:
             else:
                 out[k] = torch.stack([b[k] for b in batch_list])
         return out
+
+    def build_rir_dataset(cfg: Config, split: str, **kwargs) -> "RIRDataset":
+        """Picks local .npy files or the HF Hub dataset based on cfg.data.source."""
+        if cfg.data.source == "hub":
+            return RIRDataset(
+                root_dir=None, split=split,
+                hub_repo_id=cfg.data.hub_repo_id,
+                hub_config_name=cfg.data.hub_config_name or cfg.experiment,
+                **kwargs,
+            )
+        return RIRDataset(cfg.data.data_root, split=split, **kwargs)
 
 except ImportError:  # torch not available -- generation still works
     RIRDataset = None

@@ -35,7 +35,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config import Config, get_config
-from dataset_generator import RIRDataset, collate_fn, generate_dataset
+from dataset_generator import build_rir_dataset, collate_fn, generate_dataset
 from model import RIRFormer, build_model
 
 
@@ -232,10 +232,10 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
     torch.manual_seed(cfg.train.seed)
     np.random.seed(cfg.train.seed)
 
-    train_ds = RIRDataset(cfg.data.data_root, split="train",
+    train_ds = build_rir_dataset(cfg, split="train",
                            mask_ratio_range=(cfg.train.min_mask_ratio, cfg.train.min_mask_ratio),
                            deterministic=False)
-    val_ds = RIRDataset(cfg.data.data_root, split="val",
+    val_ds = build_rir_dataset(cfg, split="val",
                          mask_ratio_range=(cfg.train.max_mask_ratio, cfg.train.max_mask_ratio),
                          deterministic=True)
 
@@ -486,7 +486,7 @@ if __name__ == "__main__":
             print(f"[OK] Checkpoint reloads correctly (epoch={ckpt['epoch']}, "
                   f"config.experiment={ckpt['config']['experiment']})")
 
-            val_ds = RIRDataset(cfg.data.data_root, split="val",
+            val_ds = build_rir_dataset(cfg, split="val",
                                  mask_ratio_range=(0.7, 0.7), deterministic=True)
             from dataset_generator import collate_fn as cfn
             val_loader = DataLoader(val_ds, batch_size=2, shuffle=False, collate_fn=cfn)
