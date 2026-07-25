@@ -243,6 +243,10 @@ try:
                         "`datasets` package required for hub loading: pip install datasets"
                     )
                 self.hf_ds = load_dataset(hub_repo_id, hub_config_name, split=split)
+                self.hf_ds.set_format(
+                    type="numpy",
+                    columns=["rir", "mic_positions", "src_position", "room_dims", "rt60"],
+                )
                 self.files = None
             else:
                 self.dir = os.path.join(root_dir, split)
