@@ -56,6 +56,23 @@ offers an optional, unverified stand-in (`model.use_residual_refine`) that is
 **off by default**, so default behavior matches the official implementation
 exactly rather than a guess at the paper's description.
 
+## Results
+
+Metrics are averaged over `n_samples` held-out rooms per missing rate, following Eq. (11). Full sweeps are in [`exp1.csv`](exp1.csv) and [`exp2.csv`](exp2.csv). Both experiments in the paper (Tables 1–2) are reported at a **fixed 70% missing rate**, so comparisons below use that same row from each CSV.
+
+### Comparison at the paper's 70%-missing-rate operating point
+
+| | NMSE (dB) — Paper | NMSE (dB) — Ours | CD — Paper | CD — Ours |
+|---|---|---|---|---|
+| Experiment 1 | -10.440 | -10.442 | 0.051 | 0.059 |
+| Experiment 2 | -8.755 | -8.433 | 0.078 | 0.135 |
+
+Experiment 1 matches the paper almost exactly on both metrics. Experiment 2 matches (and slightly beats) the paper's NMSE, but CD is meaningfully higher — reconstructions track the RIR's energy/magnitude well but deviate more in waveform shape under the harder grid-free, random-source setting.
+
+Both experiments degrade sharply once missing rate exceeds ~70%, as fewer observed microphones leave the transformer with less geometric context to interpolate from. Inference time stays essentially flat (~3–4 ms/sample) across missing rates, since it's a single feed-forward pass over a fixed number of tokens; this isn't directly comparable to the paper's reported 0.002 s, which likely reflects different hardware/batching.
+
+![NMSE and CD vs missing rate](figures/nmse_cd_vs_missing_rate.png)
+
 ## Installation
 
 ```bash
