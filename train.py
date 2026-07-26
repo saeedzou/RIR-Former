@@ -240,8 +240,7 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
                          deterministic=True)
 
     train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, shuffle=True,
-                           collate_fn=collate_fn, num_workers=4, pin_memory=(device.type == "cuda"),
-                           persistent_workers=True)
+                           collate_fn=collate_fn, num_workers=4, pin_memory=(device.type == "cuda"),)
     val_loader = DataLoader(val_ds, batch_size=cfg.train.batch_size, shuffle=False,
                          collate_fn=collate_fn, num_workers=2, pin_memory=(device.type == "cuda"))
 
