@@ -398,6 +398,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr_scheduler", action="store_true",
                     help="Enable cosine LR annealing (off by default).")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--geo_attn_bias", action="store_true",
+                    help="Enable Strategy-2 geometric attention bias (off by default).")
     return p
 
 
@@ -415,6 +417,7 @@ def main():
             "train.min_lr": args.min_lr,
             "train.use_lr_scheduler": args.lr_scheduler,
             "train.device": args.device,
+            "model.use_geo_attn_bias": args.geo_attn_bias,
         },
     )
     run_training(cfg)

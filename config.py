@@ -121,6 +121,7 @@ class TrainConfig:
     checkpoint_dir: str = "checkpoints"
     use_lr_scheduler: bool = False   # cosine anneal lr -> min_lr over `epochs`
     min_lr: float = 1e-6            # eta_min for CosineAnnealingLR
+    use_geo_attn_bias: bool = False
 
 
 # --------------------------------------------------------------------------- #

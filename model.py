@@ -116,6 +116,79 @@ class TransformerEncoderBlock(nn.Module):
         x2 = self.ff(x)
         return self.norm2(x + self.drop(x2))
 
+# --------------------------------------------------------------------------- #
+# OPTIONAL EXTENSION (Strategy 2, default OFF): geometry injected as an
+# additive attention bias, computed once per branch and reused across every
+# transformer layer. This is purely additive to the existing architecture --
+# rir_tok/geo_tok token construction is untouched; this only changes how
+# attention logits are computed, and only when explicitly enabled.
+# --------------------------------------------------------------------------- #
+class GeoAttentionBias(nn.Module):
+    """Computes a (B, n_heads, L, L) additive bias for attention logits from
+    pairwise relative geometry. Shared across all layers within a branch."""
+
+    def __init__(self, n_heads: int = 4, d_edge_hidden: int = 64,
+                 speed_of_sound: float = 343.0):
+        super().__init__()
+        self.speed_of_sound = speed_of_sound
+        self.n_heads = n_heads
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(5, d_edge_hidden),
+            nn.GELU(),
+            nn.Linear(d_edge_hidden, n_heads),
+        )
+
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
+        # coords: (B, L, 3) -> bias: (B, n_heads, L, L)
+        rel_pos = coords[:, :, None, :] - coords[:, None, :, :]  # (B, L, L, 3)
+        dist = rel_pos.norm(dim=-1, keepdim=True)                 # (B, L, L, 1)
+        tof = dist / self.speed_of_sound                           # (B, L, L, 1)
+        edge_feat = torch.cat([rel_pos, dist, tof], dim=-1)        # (B, L, L, 5)
+        bias = self.edge_mlp(edge_feat)                             # (B, L, L, n_heads)
+        return bias.permute(0, 3, 1, 2)                              # (B, n_heads, L, L)
+
+
+class TransformerEncoderBlockWithGeoBias(nn.Module):
+    """Same role as TransformerEncoderBlock, but with a manual attention
+    implementation so a geo_bias tensor can be added to the logits before
+    the existing key_padding_mask is applied. Only instantiated when
+    cfg.model.use_geo_attn_bias=True."""
+
+    def __init__(self, d_model: int = 256, n_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+        self.qkv = nn.Linear(d_model, 3 * d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, obs_mask: torch.Tensor,
+                geo_bias: torch.Tensor) -> torch.Tensor:
+        B, L, D = x.shape
+        qkv = self.qkv(x).reshape(B, L, 3, self.n_heads, self.d_head)
+        q, k, v = qkv.unbind(dim=2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)  # (B, n_heads, L, d_head)
+
+        logits = (q @ k.transpose(-2, -1)) / (self.d_head ** 0.5)   # (B, n_heads, L, L)
+        logits = logits + geo_bias                                    # geometry injected here
+
+        # same masking semantics as TransformerEncoderBlock: missing/query
+        # points excluded as KEYS, still fully valid as QUERIES.
+        key_mask = (obs_mask == 0)[:, None, None, :]
+        logits = logits.masked_fill(key_mask, float("-inf"))
+
+        attn = logits.softmax(dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(B, L, D)
+        out = self.out_proj(out)
+
+        x = self.norm1(x + self.drop(out))
+        x2 = self.ff(x)
+        return self.norm2(x + self.drop(x2))
 
 # --------------------------------------------------------------------------- #
 # Per-segment decoder branch -- a FULLY INDEPENDENT encoder+transformer+decoder
@@ -124,7 +197,8 @@ class TransformerEncoderBlock(nn.Module):
 class RIRBranch(nn.Module):
     def __init__(self, K: int, segment_len: int, d_model: int = 256,
                  n_layers: int = 3, n_heads: int = 4, pos_freqs: int = 6,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, use_geo_attn_bias: bool = False,
+                 speed_of_sound: float = 343.0):
         super().__init__()
 
         self.pos_enc = SinusoidalPositionEncoding(num_freqs=pos_freqs, include_input=True)
@@ -143,10 +217,19 @@ class RIRBranch(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        self.blocks = nn.ModuleList([
-            TransformerEncoderBlock(d_model=d_model, n_heads=n_heads, dropout=dropout)
-            for _ in range(n_layers)
-        ])
+        self.use_geo_attn_bias = use_geo_attn_bias
+        if use_geo_attn_bias:
+            self.geo_attn_bias = GeoAttentionBias(
+                n_heads=n_heads, speed_of_sound=speed_of_sound)
+            self.blocks = nn.ModuleList([
+                TransformerEncoderBlockWithGeoBias(d_model=d_model, n_heads=n_heads, dropout=dropout)
+                for _ in range(n_layers)
+            ])
+        else:
+            self.blocks = nn.ModuleList([
+                TransformerEncoderBlock(d_model=d_model, n_heads=n_heads, dropout=dropout)
+                for _ in range(n_layers)
+            ])
 
         self.decoder = nn.Sequential(
             nn.Linear(d_model, 512),
@@ -168,8 +251,13 @@ class RIRBranch(nn.Module):
         geo_tok = self.geo_proj(self.pos_enc(geo_feat))
 
         h = rir_tok + geo_tok  # ADDITION, matching the released code exactly
-        for blk in self.blocks:
-            h = blk(h, mask)
+        if self.use_geo_attn_bias:
+            geo_bias = self.geo_attn_bias(geo_feat)   # (B, n_heads, L, L), computed once
+            for blk in self.blocks:
+                h = blk(h, mask, geo_bias)             # reused at every layer
+        else:
+            for blk in self.blocks:
+                h = blk(h, mask)
 
         return self.decoder(h)
 
@@ -206,7 +294,9 @@ class ResidualRefineModule(nn.Module):
 class RIRFormer(nn.Module):
     def __init__(self, K: int, d_model: int = 256, n_layers: int = 3,
                  n_heads: int = 4, n_segments: int = 4, pos_freqs: int = 6,
-                 dropout: float = 0.1, use_residual_refine: bool = False):
+                 dropout: float = 0.1, use_residual_refine: bool = False,
+                 use_geo_attn_bias: bool = False,
+                 speed_of_sound: float = 343.0):
         super().__init__()
         assert K % n_segments == 0, "K must be divisible by n_segments"
 
@@ -217,7 +307,9 @@ class RIRFormer(nn.Module):
         self.branches = nn.ModuleList([
             RIRBranch(K=K, segment_len=self.segment_len, d_model=d_model,
                       n_layers=n_layers, n_heads=n_heads, pos_freqs=pos_freqs,
-                      dropout=dropout)
+                      dropout=dropout,
+                      use_geo_attn_bias=use_geo_attn_bias,
+                      speed_of_sound=speed_of_sound)
             for _ in range(n_segments)
         ])
 
@@ -274,6 +366,8 @@ def build_model(cfg: Config) -> RIRFormer:
         pos_freqs=m.pos_freqs,
         dropout=m.dropout,
         use_residual_refine=m.use_residual_refine,
+        use_geo_attn_bias=m.use_geo_attn_bias,
+        speed_of_sound=cfg.speed_of_sound,
     )
 
 

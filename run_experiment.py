@@ -75,6 +75,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_lr", type=float, default=1e-6)
     p.add_argument("--lr_scheduler", action="store_true",
                     help="Enable cosine LR annealing (off by default).")
+    p.add_argument("--geo_attn_bias", action="store_true",
+                    help="Enable Strategy-2 geometric attention bias (off by default).")
 
     p.add_argument("--skip_data_gen", action="store_true",
                     help="Reuse an already-generated dataset at --data_root.")
@@ -110,6 +112,7 @@ def main():
         "train.lr": args.lr,
         "train.min_lr": args.min_lr,
         "train.use_lr_scheduler": args.lr_scheduler,
+        "model.use_geo_attn_bias": args.geo_attn_bias,
         "train.epochs": args.epochs,
         "train.finetune_epochs": args.finetune_epochs,
         "data.n_train_rooms": args.n_train,
