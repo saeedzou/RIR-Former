@@ -367,7 +367,7 @@ def build_model(cfg: Config) -> RIRFormer:
         dropout=m.dropout,
         use_residual_refine=m.use_residual_refine,
         use_geo_attn_bias=m.use_geo_attn_bias,
-        speed_of_sound=cfg.speed_of_sound,
+        speed_of_sound=cfg.room.speed_of_sound,
     )
 
 
