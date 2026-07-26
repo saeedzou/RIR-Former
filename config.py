@@ -119,6 +119,8 @@ class TrainConfig:
     log_every: int = 10
     val_every: int = 1
     checkpoint_dir: str = "checkpoints"
+    use_lr_scheduler: bool = False   # cosine anneal lr -> min_lr over `epochs`
+    min_lr: float = 1e-6            # eta_min for CosineAnnealingLR
 
 
 # --------------------------------------------------------------------------- #

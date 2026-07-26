@@ -247,6 +247,10 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
     model = build_model(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
                                    weight_decay=cfg.train.weight_decay)
+    scheduler = None
+    if cfg.train.use_lr_scheduler:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg.train.epochs, eta_min=cfg.train.min_lr)
 
     best_nmse = float("inf")
     ckpt_dir = cfg.train.checkpoint_dir
@@ -262,10 +266,14 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
         train_loss = train_one_epoch(model, train_loader, optimizer, device,
                                       cfg.train.grad_clip)
 
+        if scheduler is not None:
+            scheduler.step()
+        cur_lr = optimizer.param_groups[0]["lr"]
+
         if verbose and (epoch % cfg.train.log_every == 0 or epoch == cfg.train.epochs - 1):
             print(f"[train] epoch {epoch + 1}/{cfg.train.epochs} "
                   f"mask_ratio={ratio:.2f} loss={train_loss:.5f} "
-                  f"({time.time() - t0:.2f}s)")
+                  f"lr={cur_lr:.2e} ({time.time() - t0:.2f}s)")
 
         if (epoch + 1) % cfg.train.val_every == 0 or epoch == cfg.train.epochs - 1:
             metrics = validate(model, val_loader, device)
@@ -386,6 +394,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--finetune_epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--min_lr", type=float, default=1e-6)
+    p.add_argument("--lr_scheduler", action="store_true",
+                    help="Enable cosine LR annealing (off by default).")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p
 
@@ -401,6 +412,8 @@ def main():
             "train.finetune_epochs": args.finetune_epochs,
             "train.batch_size": args.batch_size,
             "train.lr": args.lr,
+            "train.min_lr": args.min_lr,
+            "train.use_lr_scheduler": args.lr_scheduler,
             "train.device": args.device,
         },
     )

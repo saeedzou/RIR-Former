@@ -72,6 +72,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--finetune_epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--min_lr", type=float, default=1e-6)
+    p.add_argument("--lr_scheduler", action="store_true",
+                    help="Enable cosine LR annealing (off by default).")
 
     p.add_argument("--skip_data_gen", action="store_true",
                     help="Reuse an already-generated dataset at --data_root.")
@@ -105,6 +108,8 @@ def main():
         "train.device": args.device,
         "train.batch_size": args.batch_size,
         "train.lr": args.lr,
+        "train.min_lr": args.min_lr,
+        "train.use_lr_scheduler": args.lr_scheduler,
         "train.epochs": args.epochs,
         "train.finetune_epochs": args.finetune_epochs,
         "data.n_train_rooms": args.n_train,
