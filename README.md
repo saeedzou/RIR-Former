@@ -60,18 +60,22 @@ exactly rather than a guess at the paper's description.
 
 Metrics are averaged over `n_samples` held-out rooms per missing rate, following Eq. (11). Full sweeps are in [`exp1.csv`](exp1.csv) and [`exp2.csv`](exp2.csv). Both experiments in the paper (Tables 1–2) are reported at a **fixed 70% missing rate**, so comparisons below use that same row from each CSV.
 
+Two optional training improvements are available on top of the paper-matching baseline: cosine LR annealing (`--lr_scheduler`) and Strategy-2 geometric attention bias (`--geo_attn_bias`). Both are off by default to keep the baseline paper-faithful.
+
 ### Comparison at the paper's 70%-missing-rate operating point
 
-| | NMSE (dB) — Paper | NMSE (dB) — Ours | CD — Paper | CD — Ours |
-|---|---|---|---|---|
-| Experiment 1 | -10.440 | -10.442 | 0.051 | 0.059 |
-| Experiment 2 | -8.755 | -8.433 | 0.078 | 0.135 |
+| | NMSE (dB) — Paper | NMSE (dB) — Ours | NMSE (dB) — Ours (+LR+Geo) | CD — Paper | CD — Ours | CD — Ours (+LR+Geo) |
+|---|---|---|---|---|---|---|
+| Experiment 1 | -10.440 | -10.442 | **-11.016** | **0.051** | 0.059 | 0.055 |
+| Experiment 2 | -8.755 | -8.433 | **-9.075** | **0.078** | 0.135 | 0.131 |
 
-Experiment 1 matches the paper almost exactly on both metrics. Experiment 2 matches (and slightly beats) the paper's NMSE, but CD is meaningfully higher — reconstructions track the RIR's energy/magnitude well but deviate more in waveform shape under the harder grid-free, random-source setting.
+Adding LR annealing + geometric attention bias improves NMSE noticeably in both experiments (~0.6 dB on Exp 1, ~0.6 dB on Exp 2), pushing both past the paper's NMSE. CD improves too relative to the baseline reimplementation, but doesn't fully close the gap to the paper — Exp 2 in particular still trails on waveform-shape fidelity, though less so than before.
 
-Both experiments degrade sharply once missing rate exceeds ~70%, as fewer observed microphones leave the transformer with less geometric context to interpolate from. Inference time stays essentially flat (~3–4 ms/sample) across missing rates, since it's a single feed-forward pass over a fixed number of tokens; this isn't directly comparable to the paper's reported 0.002 s, which likely reflects different hardware/batching.
+Both experiments still degrade sharply once missing rate exceeds ~70%, and inference time remains flat (~3.5–4 ms/sample) regardless of these training changes, since they only affect optimization/architecture, not the feed-forward cost.
 
 ![NMSE and CD vs missing rate](figures/nmse_cd_vs_missing_rate.png)
+
+![NMSE and CD vs missing rate with LR annealing + geometric attention bias](figures/nmse_cd_vs_missing_rate_geo_lr.png)
 
 ## Installation
 
