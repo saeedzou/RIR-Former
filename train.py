@@ -72,6 +72,42 @@ def masked_mse_loss(pred: torch.Tensor, target: torch.Tensor,
     row_sq_err_sum = se.sum()             # sum_n sum_k (h_bar - h_hat)^2
     return row_sq_err_sum / n_missing_rows.clamp(min=1.0)
 
+# --------------------------------------------------------------------------- #
+# OPTIONAL auxiliary loss term (default OFF via cd_loss_weight=0.0): the
+# same 1 - cos_angle quantity CD measures at eval time (see
+# compute_metrics_per_sample below), computed over the missing rows of a
+# training batch. MSE alone rewards squared-error magnitude but doesn't
+# explicitly reward per-row directional/shape fidelity -- this term does.
+# --------------------------------------------------------------------------- #
+def masked_cosine_loss(pred: torch.Tensor, target: torch.Tensor,
+                        mask: torch.Tensor) -> torch.Tensor:
+    """pred, target: (B, L, K). mask: (B, L), 1=observed, 0=missing.
+    Returns mean_n [1 - cos_angle(h_gt_n, h_hat_n)] over every missing row
+    in the batch -- same formula as the CD metric, just averaged over rows
+    directly (flattened across B, L) rather than per-sample-then-averaged,
+    consistent with how masked_mse_loss already flattens over B, L."""
+    missing = (mask == 0)                      # (B, L)
+    if missing.sum() == 0:
+        return torch.zeros((), device=pred.device, dtype=pred.dtype)
+
+    pred_m = pred[missing]                      # (n_missing, K)
+    tgt_m = target[missing]                      # (n_missing, K)
+    p_norm = pred_m.norm(dim=-1).clamp(min=1e-8)
+    t_norm = tgt_m.norm(dim=-1).clamp(min=1e-8)
+    cos_sim = (pred_m * tgt_m).sum(dim=-1) / (p_norm * t_norm)
+    return (1.0 - cos_sim).mean()
+
+
+def combined_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor,
+                   cd_weight: float = 0.0) -> torch.Tensor:
+    """masked_mse_loss + cd_weight * masked_cosine_loss. cd_weight=0.0
+    (the default) reproduces masked_mse_loss exactly -- verified bit-for-bit
+    identical, so existing runs are unaffected unless cd_weight is set."""
+    mse = masked_mse_loss(pred, target, mask)
+    if cd_weight > 0:
+        cd = masked_cosine_loss(pred, target, mask)
+        return mse + cd_weight * cd
+    return mse
 
 # --------------------------------------------------------------------------- #
 # NMSE / CD metrics (Eq. 11), evaluated on missing positions only.
@@ -150,7 +186,8 @@ def load_checkpoint(model: nn.Module, path: str, device: str = "cpu") -> dict:
 # Train / validate one epoch
 # --------------------------------------------------------------------------- #
 def train_one_epoch(model, loader, optimizer, device, grad_clip: float,
-                     only_segment: Optional[int] = None) -> float:
+                     only_segment: Optional[int] = None,
+                     cd_loss_weight: float = 0.0) -> float:
     model.train()
     total_loss, n_batches = 0.0, 0
 
@@ -163,7 +200,7 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip: float,
 
         if only_segment is None:
             pred = model(H_norm, mask, geo_feat)
-            loss = masked_mse_loss(pred, H_norm, mask)
+            loss = combined_loss(pred, H_norm, mask, cd_weight=cd_loss_weight)
         elif not getattr(model, "use_residual_refine", False):
             # Default / released-model setting: no refine module, so each
             # branch's segment slice is placed into the final output via
@@ -175,7 +212,7 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip: float,
             s0, s1 = only_segment * seg, (only_segment + 1) * seg
             tgt_seg = H_norm[:, :, s0:s1]
             pred_seg = model.forward_segment_only(only_segment, H_norm, mask, geo_feat)
-            loss = masked_mse_loss(pred_seg, tgt_seg, mask)
+            loss = combined_loss(pred_seg, tgt_seg, mask, cd_weight=cd_loss_weight)
         else:
             # If the optional residual refine module IS enabled, it mixes
             # information across segment boundaries (temporal Conv1d over
@@ -191,7 +228,7 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip: float,
             pred_full = model(H_norm, mask, geo_feat)
             pred_seg = pred_full[:, :, s0:s1]
             tgt_seg = H_norm[:, :, s0:s1]
-            loss = masked_mse_loss(pred_seg, tgt_seg, mask)
+            loss = combined_loss(pred_seg, tgt_seg, mask, cd_weight=cd_loss_weight)
 
         loss.backward()
         if grad_clip is not None and grad_clip > 0:
@@ -264,7 +301,8 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
 
         t0 = time.time()
         train_loss = train_one_epoch(model, train_loader, optimizer, device,
-                                      cfg.train.grad_clip)
+                                      cfg.train.grad_clip,
+                                      cd_loss_weight=cfg.train.cd_loss_weight)
 
         if scheduler is not None:
             scheduler.step()
@@ -328,7 +366,8 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
                 # back-propagates into branch[seg_idx]'s parameters -- see
                 # the comment in train_one_epoch for why this matters.
                 loss = train_one_epoch(model, train_loader, seg_optimizer, device,
-                                        cfg.train.grad_clip, only_segment=seg_idx)
+                                        cfg.train.grad_clip, only_segment=seg_idx,
+                                        cd_loss_weight=cfg.train.cd_loss_weight)
                 if verbose and (epoch % cfg.train.log_every == 0
                                 or epoch == cfg.train.finetune_epochs - 1):
                     print(f"[finetune seg {seg_idx}] epoch {epoch + 1}/"
@@ -363,7 +402,8 @@ def run_training(cfg: Config, verbose: bool = True) -> str:
 
         for epoch in range(cfg.train.refine_finetune_epochs):
             loss = train_one_epoch(model, train_loader, refine_optimizer, device,
-                                    cfg.train.grad_clip)  # only_segment=None -> full loss
+                                    cfg.train.grad_clip,
+                                    cd_loss_weight=cfg.train.cd_loss_weight)  # only_segment=None -> full loss
             if verbose and (epoch % cfg.train.log_every == 0
                             or epoch == cfg.train.refine_finetune_epochs - 1):
                 print(f"[refine finetune] epoch {epoch + 1}/"
@@ -400,6 +440,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--geo_attn_bias", action="store_true",
                     help="Enable Strategy-2 geometric attention bias (off by default).")
+    p.add_argument("--cd_loss_weight", type=float, default=0.0,
+                    help="Weight of an auxiliary cosine-similarity loss term "
+                         "(0.0 = off, matches the released MSE-only objective).")
     return p
 
 
@@ -418,6 +461,7 @@ def main():
             "train.use_lr_scheduler": args.lr_scheduler,
             "train.device": args.device,
             "model.use_geo_attn_bias": args.geo_attn_bias,
+            "train.cd_loss_weight": args.cd_loss_weight,
         },
     )
     run_training(cfg)
